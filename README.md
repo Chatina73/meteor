@@ -14,10 +14,10 @@ With Meteor you write apps:
 
 Try a getting started tutorial:
  * [React](https://react-tutorial.meteor.com)
- * [Blaze](https://www.meteor.com/tutorials/blaze/creating-an-app)
+ * [Blaze](https://blaze-tutorial.meteor.com/)
  * [Angular](https://www.meteor.com/tutorials/angular/creating-an-app)
- * [Vue](https://www.meteor.com/tutorials/vue/creating-an-app)
- * [Svelte](https://www.meteor.com/tutorials/svelte/creating-an-app)
+ * [Vue](https://vue-tutorial.meteor.com/)
+ * [Svelte](https://svelte-tutorial.meteor.com/)
 
 Next, read the [guide](https://guide.meteor.com) and the [documentation](https://docs.meteor.com/).
 
@@ -66,7 +66,7 @@ Interested in helping or contributing to Meteor?  These resources will help:
 
 * [Core development guide](DEVELOPMENT.md)
 * [Contribution guidelines](CONTRIBUTING.md)
-* [Feature requests](https://github.com/meteor/meteor-feature-requests/)
+* [Feature requests](https://github.com/meteor/meteor/discussions/)
 * [Issue tracker](https://github.com/meteor/meteor/issues)
 
 ## Uninstalling Meteor
