@@ -2,7 +2,7 @@
 
 Labels are used to organize our issues and PRs.
 
-We should change the labels of issues and PRs when its status changes.
+We should change the labels of issues and PRs when their status changes.
 
 ### Status Labels
 Labels to indicate the status of a specific issue or PR. These are the most important labels as they tell us in which stage a specific item is at the moment at a glance.
@@ -58,5 +58,5 @@ They start with `Project:` and they are used to inform the parts of Meteor that 
 
 ## Special Labels
 
-- `good-first-issue`: Used to indicate items friendly to beginners in Meteor
+- `good first issue`: Used to indicate items friendly to beginners in Meteor
 - `hacktoberfest-accepted`: Used to indicate items accepted for [Hacktoberfest](https://hacktoberfest.digitalocean.com/hacktoberfest-update)

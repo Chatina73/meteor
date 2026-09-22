@@ -1,15 +1,9 @@
 var _ = require('underscore');
-var sourcemap = require('source-map');
-
 var files = require('../fs/files');
 var utils = require('../utils/utils.js');
 var watch = require('../fs/watch');
 var buildmessage = require('../utils/buildmessage.js');
-var meteorNpm = require('./meteor-npm.js');
-import Builder from './builder.js';
 var archinfo = require('../utils/archinfo');
-var catalog = require('../packaging/catalog/catalog.js');
-var packageVersionParser = require('../packaging/package-version-parser.js');
 var compiler = require('./compiler.js');
 var Profile = require('../tool-env/profile').Profile;
 
@@ -36,6 +30,10 @@ import {
   optimisticReadMeteorIgnore,
   optimisticLookupPackageJsonArray,
 } from "../fs/optimistic";
+
+// resolve package includes malformed package.json intentionally
+// https://forums.meteor.com/t/unable-to-run-after-update-to-2-5-2/57266/6
+const EXPECTED_INVALID_PACKAGE_JSON_PATHS_TO_IGNORE = ['resolve/test/resolver/malformed_package_json']
 
 // XXX: This is a medium-term hack, to avoid having the user set a package name
 // & test-name in package.describe. We will change this in the new control file
@@ -74,7 +72,7 @@ var loadOrderSort = function (sourceProcessorSet, arch) {
       return false;
 
     default:
-      throw Error(`surprising type ${classification.type} for ${filename}`);
+      throw Error(`Surprising type ${classification.type} for ${filename}`);
     }
   });
 
@@ -209,7 +207,7 @@ var getExcerptFromReadme = function (text) {
   }
   var excerpt = textLines.slice(start, stop).join("\n");
 
-  // Strip the preceeding and trailing new lines.
+  // Strip the preceding and trailing new lines.
   return excerpt.replace(/^\n+|\n+$/g, "");
 };
 
@@ -330,6 +328,9 @@ var PackageSource = function () {
   // as a string.
   self.npmDependencies = {};
 
+  // npm packages used for development of this package.
+  self.npmDevDependencies = {};
+
   // Files to be stripped from the installed NPM dependency tree. See the
   // Npm.strip comment below for further usage information.
   self.npmDiscards = null;
@@ -379,10 +380,15 @@ var PackageSource = function () {
   // specify the correct restrictions at 0.90.
   // XXX: 0.90 package versions.
   self.isCore = false;
+
+  // Flags for Atmosphere and developers to mark if deprecated packages
+  // and provide additional info.
+  self.deprecated = false;
+  self.deprecatedMessage = undefined;
 };
 
 
-_.extend(PackageSource.prototype, {
+Object.assign(PackageSource.prototype, {
   // Make a dummy (empty) packageSource that contains nothing of interest.
   // XXX: Do we need this
   initEmpty: function (name) {
@@ -435,6 +441,9 @@ _.extend(PackageSource.prototype, {
     utils.ensureOnlyValidVersions(options.npmDependencies, {forCordova: false});
     self.npmDependencies = options.npmDependencies;
 
+    utils.ensureOnlyValidVersions(options.npmDevDependencies, {forCordova: false});
+    self.npmDevDependencies = options.npmDevDependencies;
+
     // If options.npmDir is a string, make sure it contains no colons.
     self.npmCacheDirectory = _.isString(options.npmDir)
       ? convertColonsInPath(options.npmDir)
@@ -469,7 +478,7 @@ _.extend(PackageSource.prototype, {
     });
 
     if (options.localNodeModulesDirs) {
-      _.extend(sourceArch.localNodeModulesDirs,
+      Object.assign(sourceArch.localNodeModulesDirs,
                options.localNodeModulesDirs);
     }
 
@@ -482,7 +491,7 @@ _.extend(PackageSource.prototype, {
 
   // Initialize a PackageSource from a package.js-style package directory. Uses
   // the name field provided and the name/test fields in the package.js file to
-  // figre out if this is a test package (load from onTest) or a use package
+  // figure out if this is a test package (load from onTest) or a use package
   // (load from onUse).
   //
   // name: name of the package.
@@ -491,11 +500,14 @@ _.extend(PackageSource.prototype, {
   // - name: override the name of this package with a different name.
   // - buildingIsopackets: true if this is being scanned in the process
   //   of building isopackets
+  // - buildingSelfTestCatalog: true if this is being scanned by
+  //   newSelfTestCatalog. Causes versionsFrom() to no-op so the scan
+  //   does not depend on catalog.official being warm.
   initFromPackageDir: Profile((dir, options) => {
     return `PackageSource#initFromPackageDir for ${
       options?.name || dir.split(files.pathSep).pop()
     }`;
-  }, function (dir, options) {
+  }, async function (dir, options) {
     var self = this;
     buildmessage.assertInCapture();
     var isPortable = true;
@@ -503,7 +515,7 @@ _.extend(PackageSource.prototype, {
     var initFromPackageDirOptions = options;
 
     // If we know what package we are initializing, we pass in a
-    // name. Otherwise, we are intializing the base package specified by 'name:'
+    // name. Otherwise, we are initializing the base package specified by 'name:'
     // field in Package.Describe. In that case, it is clearly not a test
     // package. (Though we could be initializing a specific package without it
     // being a test, for a variety of reasons).
@@ -585,7 +597,7 @@ _.extend(PackageSource.prototype, {
     const Cordova = new PackageCordova();
 
     try {
-      files.runJavaScript(packageJsCode.toString('utf8'), {
+      await files.runJavaScript(packageJsCode.toString('utf8'), {
         filename: 'package.js',
         symbols: { Package, Npm, Cordova }
       });
@@ -655,12 +667,15 @@ _.extend(PackageSource.prototype, {
     // exist in the field, if not every single one. #OldStylePackageSupport
 
     var api = new PackageAPI({
-      buildingIsopackets: !! initFromPackageDirOptions.buildingIsopackets
+      buildingIsopackets: !! initFromPackageDirOptions.buildingIsopackets,
+      buildingSelfTestCatalog: !! initFromPackageDirOptions.buildingSelfTestCatalog,
     });
 
     if (Package._fileAndDepLoader) {
       try {
-        buildmessage.markBoundary(Package._fileAndDepLoader)(api);
+        const marked = buildmessage.markBoundary(Package._fileAndDepLoader)
+        await marked(api);
+        await api._waitForAsyncWork();
       } catch (e) {
         console.log(e.stack); // XXX should we keep this here -- or do we want broken
                               // packages to fail silently?
@@ -767,7 +782,10 @@ _.extend(PackageSource.prototype, {
     // dirs for use vs test?
     self.npmCacheDirectory =
       files.pathResolve(files.pathJoin(self.sourceRoot, '.npm', 'package'));
+    self.npmDevCacheDirectory =
+        files.pathResolve(files.pathJoin(self.sourceRoot, '.npm', 'devPackage'));
     self.npmDependencies = Npm._dependencies;
+    self.npmDevDependencies = Npm._devDependencies;
     self.npmDiscards = Npm._discards;
 
     self.cordovaDependencies = Cordova._dependencies;
@@ -817,6 +835,18 @@ _.extend(PackageSource.prototype, {
             relPathToSourceObj[source.relPath] = source;
           });
 
+          // Files explicitly declared as assets (api.addAssets) must not be
+          // re-discovered as compilable sources by _findSources below. Assets are
+          // tracked per-arch, but an asset declared on ANY arch (e.g. a `.html`
+          // fixture added for 'server') must never be scanned back in as a source
+          // on a DIFFERENT arch where its extension is claimed by a compiler (e.g.
+          // the web/templating html compiler) — that hands a raw asset to the
+          // wrong compiler and aborts the build with a spurious compile error
+          // (see spacebars-tests' assets/markdown_basic.html). Gather asset paths
+          // across all arches; an explicit asset declaration always wins.
+          const assets = Object.values(api.files).flatMap(files => (files.assets || []).map(asset => asset.relPath));
+          const assetRelPaths = new Set(assets);
+
           self._findSources({
             sourceProcessorSet,
             watchSet,
@@ -836,7 +866,7 @@ _.extend(PackageSource.prototype, {
                 fileOptions.lazy = false;
               }
 
-            } else {
+            } else if (!assetRelPaths.has(relPath)) {
               const fileOptions = Object.create(null);
 
               // Since this file was not explicitly added with
@@ -902,13 +932,13 @@ _.extend(PackageSource.prototype, {
 
     const projectWatchSet = projectContext.getProjectWatchSet();
 
-    const mainModulesByArch =
+    let mainModulesByArch =
       projectContext.meteorConfig.getMainModulesByArch();
 
-    const testModulesByArch =
+    let testModulesByArch =
       projectContext.meteorConfig.getTestModulesByArch();
 
-    const nodeModulesToRecompileByArch =
+    let nodeModulesToRecompileByArch =
       projectContext.meteorConfig.getNodeModulesToRecompileByArch();
 
     projectWatchSet.merge(projectContext.meteorConfig.watchSet);
@@ -921,14 +951,34 @@ _.extend(PackageSource.prototype, {
         return;
       }
 
-      const mainModule = projectContext.meteorConfig
+      let mainModule = projectContext.meteorConfig
         .getMainModule(arch, mainModulesByArch);
 
-      const testModule = projectContext.meteorConfig
+      let testModule = projectContext.meteorConfig
         .getTestModule(arch, testModulesByArch);
 
-      const nodeModulesToRecompile = projectContext.meteorConfig
+      let nodeModulesToRecompile = projectContext.meteorConfig
         .getNodeModulesToRecompile(arch, nodeModulesToRecompileByArch);
+
+      // If the config is reinitialized dynamically, reload needs to happen
+      // in order to get the new mainModule, testModule, and nodeModulesToRecompile
+      // for the build process. We ensure to compute the new values once.
+      function tryReloadMeteorConfig() {
+        if (projectContext.meteorConfig?._needReload?.[arch]) {
+          mainModulesByArch =
+            projectContext.meteorConfig.getMainModulesByArch();
+          testModulesByArch =
+            projectContext.meteorConfig.getTestModulesByArch();
+          mainModule = projectContext.meteorConfig
+            .getMainModule(arch, mainModulesByArch);
+          testModule = projectContext.meteorConfig
+            .getTestModule(arch, testModulesByArch);
+          nodeModulesToRecompile = projectContext.meteorConfig
+            .getNodeModulesToRecompile(arch, nodeModulesToRecompileByArch);
+
+          projectContext.meteorConfig._needReload[arch] = false;
+        }
+      }
 
       // XXX what about /web.browser/* etc, these directories could also
       // be for specific client targets.
@@ -940,6 +990,8 @@ _.extend(PackageSource.prototype, {
         sourceRoot: self.sourceRoot,
         uses: uses,
         getFiles(sourceProcessorSet, watchSet) {
+          tryReloadMeteorConfig();
+          
           sourceProcessorSet.watchSet = watchSet;
 
           const findOptions = {
@@ -955,10 +1007,21 @@ _.extend(PackageSource.prototype, {
           // If this architecture has a mainModule defined in
           // package.json, it's an error if _findSources doesn't find that
           // module. If no mainModule is defined, anything goes.
-          let missingMainModule = !! mainModule;
+          // If the source processor set allows conflicts (such as when linting)
+          // then sources will not be the same files used to bundle the app.
+          let missingMainModule = !! mainModule &&
+            !sourceProcessorSet.isConflictsAllowed();
+
+          // Similar to the main module, when conflicts are allowed
+          // these sources won't be used to build the app so the order
+          // isn't important, and is difficult to accurately create when
+          // there are conflicts
+          let sorter = sourceProcessorSet.isConflictsAllowed() ?
+            () => 0 :
+            loadOrderSort(sourceProcessorSet, arch);
 
           const sources = self._findSources(findOptions).sort(
-            loadOrderSort(sourceProcessorSet, arch)
+            sorter
           ).map(relPath => {
             if (relPath === mainModule) {
               missingMainModule = false;
@@ -1336,7 +1399,35 @@ _.extend(PackageSource.prototype, {
       if (inNodeModules) {
         // This is an array because (in some rare cases) an npm package
         // may have nested package.json files with additional properties.
-        const pkgJsonArray = optimisticLookupPackageJsonArray(self.sourceRoot, dir);
+        let pkgJsonArray = [];
+        try {
+          pkgJsonArray = optimisticLookupPackageJsonArray(self.sourceRoot, dir);
+        } catch (e) {
+          const message = `Error reading package.json from dir "${dir}", this may cause important errors in your project like modules not being found. You should fix this dependency or find an alternative`;
+          if (
+            EXPECTED_INVALID_PACKAGE_JSON_PATHS_TO_IGNORE.find(path =>
+              dir.includes(path)
+            )
+          ) {
+            if (process.env.METEOR_WARN_ON_INVALID_EXPECTED_PACKAGE_JSON_ERRORS) {
+              console.warn(message, e);
+            }
+            // Pretend we found no files but in reality this package.json was ignored
+            return [];
+          }
+          if (process.env.METEOR_IGNORE_INVALID_PACKAGE_JSON_ERRORS) {
+            // Pretend we found no files but in reality an error happened reading this package.json
+            return [];
+          }
+          if (process.env.METEOR_WARN_ON_INVALID_PACKAGE_JSON_ERRORS) {
+            console.warn(message, e);
+            // Pretend we found no files but in reality an error happened reading this package.json
+            return [];
+          }
+          // This is going to break the run but at least with a clear error indicating what is the problematic package.json
+          console.error(message, e);
+          throw e;
+        }
 
         // If a package.json file with a "name" property is found, it will
         // always be the first in the array.
@@ -1377,7 +1468,7 @@ _.extend(PackageSource.prototype, {
           // subdirectories, so that we know whether we need to descend
           // further. If sources is still empty after we handle everything
           // else in dir, then nothing in this node_modules subdir can be
-          // imported by anthing outside of it, so we can ignore it.
+          // imported by anything outside of it, so we can ignore it.
           nodeModulesDir = subdir;
 
           // A "local" node_modules directory is one that's managed by the
@@ -1564,7 +1655,7 @@ _.extend(PackageSource.prototype, {
         }
       });
     });
-    return _.keys(packages);
+    return Object.keys(packages);
   },
 
   // Returns an array of objects, representing this package's public

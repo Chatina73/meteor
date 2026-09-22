@@ -1,25 +1,35 @@
-import { ApolloServer } from 'apollo-server-express';
-import { WebApp } from 'meteor/webapp';
+import { ApolloServer } from '@apollo/server';
+import { WebApp, WebAppInternals } from 'meteor/webapp';
 import { getUser } from 'meteor/apollo';
 import { LinksCollection } from '/imports/api/links';
 import typeDefs from '/imports/apollo/schema.graphql';
+import { expressMiddleware } from '@apollo/server/express4';
+
+const express = WebAppInternals.NpmModules.express.module;
 
 const resolvers = {
   Query: {
-    getLink: (obj, { id }) => LinksCollection.findOne(id),
-    getLinks: () => LinksCollection.find().fetch()
+    getLink: async (obj, { id }) => LinksCollection.findOneAsync(id),
+    getLinks: async () => LinksCollection.find().fetchAsync()
   }
 };
 
-const server = new ApolloServer({
-  typeDefs,
-  resolvers,
-  context: async ({ req }) => ({
-    user: await getUser(req.headers.authorization)
-  })
+const context = async ({ req }) => ({
+  user: await getUser(req.headers.authorization)
 });
 
-server.applyMiddleware({
-  app: WebApp.connectHandlers,
-  cors: true
+const server = new ApolloServer({
+  cache: 'bounded',
+  typeDefs,
+  resolvers,
 });
+
+export async function startApolloServer() {
+  await server.start();
+
+  WebApp.handlers.use(
+    '/graphql',                                     // Configure the path as you want.
+    express.json(),
+    expressMiddleware(server, { context }) // From `@apollo/server/express4`
+  );
+}

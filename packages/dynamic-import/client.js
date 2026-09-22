@@ -3,6 +3,9 @@ var cache = require("./cache.js");
 var meteorInstall = require("meteor/modules").meteorInstall;
 var dynamicVersions = require("./dynamic-versions.js");
 
+// Fix for Safari 14 bug (https://bugs.webkit.org/show_bug.cgi?id=226547), do not delete this unused var
+var idb = global.indexedDB;
+
 var dynamicImportSettings = Meteor.settings
     && Meteor.settings.public
     && Meteor.settings.public.packages
@@ -148,7 +151,7 @@ function fetchMissing(missingTree) {
   var disableLocationOriginIframe = dynamicImportSettings.disableLocationOriginIframe;
 
   if (useLocationOrigin && location && !(disableLocationOriginIframe && inIframe())) {
-    url = location.origin.concat(url);
+    url = location.origin.concat(__meteor_runtime_config__.ROOT_URL_PATH_PREFIX || '', url);
   } else {
     url = Meteor.absoluteUrl(url);
   }
